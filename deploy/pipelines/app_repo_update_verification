@@ -1,0 +1,159 @@
+#!groovy
+
+pipeline {
+agent any
+environment{
+SEQ_FILE_LOC='/u05/jenkins/instances/eo-jenkins/jenkins_data/workspace/EMDS/OAIMS/'
+}
+
+parameters {
+choice(name: 'APPLICATION', choices: 'oaims', description: 'Select the Application' )
+}
+
+stages{
+
+stage ('Build Info Set'){
+steps{
+script{
+def triggeredByUser="${currentBuild.rawBuild.getCause(hudson.model.Cause$UserIdCause).getUserName()}"
+currentBuild.displayName="${BUILD_DISPLAY_NAME} - ${APPLICATION} - ${triggeredByUser}"
+}
+}
+}
+
+stage('Checkout App Repository'){
+steps{
+deleteDir()
+sh'''
+#!/bin/bash
+set +x
+mkdir -p /u05/jenkins/instances/eo-jenkins/jenkins_data/workspace/EMDS/OAIMS/app_repo_update_verification/apps/${APPLICATION}/
+cd /u05/jenkins/instances/eo-jenkins/jenkins_data/workspace/EMDS/OAIMS/app_repo_update_verification/apps/${APPLICATION}/
+echo "Cloning ALM-ODCS-GIT URL for repository ${APPLICATION}"
+chmod -R 777 /u05/jenkins/instances/eo-jenkins/jenkins_data/workspace/EMDS/OAIMS
+
+#credentialsId: 'EO-JENKINS',
+#url: 'ssh://alm.oraclecorp.com:2222/emds_emdsap-oaims_19204/emdsap-oaims.git'
+#checkout( [
+#$class:'GitSCM',
+#branches:[[name:'*/master']],
+#userRemoteConfigs:[[url:'ssh://alm.oraclecorp.com:2222/emds_emdsap-oaims_19204/emdsap-oaims.git'],
+#[credentialsId:'EO-JENKINS']]
+#])
+
+'''
+build job: 'oaims_repo'          
+}//steps         
+}//stage
+
+stage ('Verify Topics'){
+steps{
+sh '''
+#!/bin/bash
+set +x
+cd /u05/jenkins/instances/eo-jenkins/jenkins_data/workspace/EMDS/OAIMS/app_repo_update_verification/apps/${APPLICATION}/
+WORKSPACE="$(pwd)"
+echo ${WORKSPACE}
+# need to change the above path with actual repo....
+git status
+git checkout master
+echo "\n LIST TOPICS \n"
+git branch -r | grep 'origin/topic' | cut -d '/' -f2 | tee ${WORKSPACE}/${APPLICATION}_current_topics.txt
+touch ${WORKSPACE}/${APPLICATION}_active_topics.txt
+echo "\n"
+for topic_branch in `git branch -r | grep 'origin/topic' | cut -d '/' -f2`;
+do
+echo "\n Topic Branch:  ${topic_branch} \n"
+git checkout ${topic_branch}
+git status
+deploy_file="deploy/${topic_branch}_deploy.txt"
+mkdir -p  ${SEQ_FILE_LOC}/${APPLICATION}/${topic_branch}/deploy
+if [ -f /u05/jenkins/instances/eo-jenkins/jenkins_data/workspace/EMDS/OAIMS/app_repo_update_verification/apps/${APPLICATION}/deploy/${topic_branch}_deploy.txt ]
+then
+cp /u05/jenkins/instances/eo-jenkins/jenkins_data/workspace/EMDS/OAIMS/app_repo_update_verification/apps/${APPLICATION}/deploy/${topic_branch}_deploy.txt /${SEQ_FILE_LOC}/${APPLICATION}/${topic_branch}/deploy/
+
+fi
+
+# First Condition
+if [ -f $deploy_file ]; then
+echo "\n Deploy file exist \n "
+deploy_seq=`cat $deploy_file | grep -v '^#|^$' | wc -l`
+changeCount=`git diff --name-only master | wc -l`
+echo "${topic_branch}" >> ${WORKSPACE}/${APPLICATION}_active_topics.txt
+
+
+if [[ "${topic_branch}" == "topic_rel_19.05.24" ]] || [[ "${topic_branch}" == "topic_rel_19.06.06" ]] || [[ "${topic_branch}" == "topic_rel_19.06.20" ]] || [[ "${topic_branch}" == "topic_rel_19.07.05" ]] || [[ "${topic_branch}" == "topic_rel_19.07.19" ]] || [[ "${topic_branch}" == "topic_rel_19.08.02" ]]; then
+while read in; do cp -r -v -f --parents "$in" ${SEQ_FILE_LOC}/${APPLICATION}/${topic_branch} ; done < ${SEQ_FILE_LOC}/${APPLICATION}/${topic_branch}/${topic_branch}_diff_files_wr.txt
+else
+rm -rvf ${SEQ_FILE_LOC}/${APPLICATION}/${topic_branch}/*.txt
+mkdir -p ${SEQ_FILE_LOC}/${APPLICATION}/${topic_branch}/deploy
+touch ${SEQ_FILE_LOC}/${APPLICATION}/${topic_branch}/${topic_branch}_diff_files.txt
+touch ${SEQ_FILE_LOC}/${APPLICATION}/${topic_branch}/${topic_branch}_sorted_diff_log.txt
+touch ${SEQ_FILE_LOC}/${APPLICATION}/${topic_branch}/${topic_branch}_sorted_deploy_seq.txt
+git diff --name-only master >> ${SEQ_FILE_LOC}/${APPLICATION}/${topic_branch}/${topic_branch}_diff_files.txt
+git diff --name-only master | grep -v 'deploy' | sort >> ${SEQ_FILE_LOC}/${APPLICATION}/${topic_branch}/${topic_branch}_sorted_diff_log.txt
+cat deploy/${topic_branch}_deploy.txt | grep -v '^#' |grep -v '^$' | cut -d '|' -f2 | sort >> ${SEQ_FILE_LOC}/${APPLICATION}/${topic_branch}/${topic_branch}_sorted_deploy_seq.txt
+echo "\n"
+while read in; do cp -r -v -f --parents "$in" ${SEQ_FILE_LOC}/${APPLICATION}/${topic_branch} ; done < ${SEQ_FILE_LOC}/${APPLICATION}/${topic_branch}/${topic_branch}_diff_files.txt
+touch ${SEQ_FILE_LOC}/${APPLICATION}/app_deploy_status.txt
+grep -qF -- "${APPLICATION}_${topic_branch}::" ${SEQ_FILE_LOC}/${APPLICATION}/app_deploy_status.txt || echo "${APPLICATION}_${topic_branch}::" >> "${SEQ_FILE_LOC}/${APPLICATION}/app_deploy_status.txt"
+echo "${topic_branch}" >> ${WORKSPACE}/${APPLICATION}_active_topics.txt
+fi # clouser of topic branch OR condition
+else
+echo "\n Deploy file does'nt exist"
+fi # closure of First Condition
+done
+git checkout master
+'''
+}
+}
+
+stage('Common-Files-Check'){
+steps{ // yet to do
+sh '''
+#!/bin/bash
+set +x
+cd /u05/jenkins/instances/eo-jenkins/jenkins_data/workspace/EMDS/OAIMS/app_repo_update_verification/apps/${APPLICATION}
+WORKSPACE="$(pwd)"
+cd ${SEQ_FILE_LOC}/${APPLICATION}
+cat /dev/null > common_file_check.txt
+cat /dev/null > file_list.txt
+echo " "
+cat ${WORKSPACE}/${APPLICATION}_active_topics.txt
+echo " "
+# find . -name *_diff_files.txt
+while read -r topic ;
+do
+echo " Topic to be checked for common files  ${topic}"
+find ${topic} -name *_diff_files.txt | tee -a file_list.txt
+done < ${WORKSPACE}/${APPLICATION}_active_topics.txt
+# find . -name *_diff_files.txt >> file_list.txt
+while read -r diff_file ;
+do
+path="$(dirname $diff_file)"
+dir="$(basename $path)"
+echo "\n parsing $dir \n"
+echo " "
+while read -r file;
+do
+if grep "$file" common_file_check.txt
+then
+echo " common file found  $file "
+sed -i "s|$file|$file,$dir|g"   common_file_check.txt
+echo " "
+else
+echo "$file,$dir" >> common_file_check.txt
+fi
+done < "$diff_file"
+done < file_list.txt
+echo "\n FollowingFiles have been modified in multiple topics \n"
+echo "###### \n"
+grep ',.*,' common_file_check.txt | column -s, -t | tee review_common_files.txt
+echo "######\n"
+'''
+} //steps
+} //stage
+
+
+} //stages
+} //pipeline

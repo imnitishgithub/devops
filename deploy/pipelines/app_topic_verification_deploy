@@ -1,0 +1,125 @@
+#!groovy
+pipeline {
+agent any
+environment {
+SEQ_FILE_LOC='/u05/jenkins/instances/eo-jenkins/jenkins_data/workspace/EMDS/OAIMS/'
+CODE_MIG_S_LOC='/u05/jenkins/instances/eo-jenkins/jenkins_data/oaims_code_migration_scripts/'
+}
+parameters {
+string(name: 'ENVIRONMENT', defaultValue: 'EMDSAU', description: 'Target instance to deploy')
+string(name: 'APPLICATION', defaultValue: 'oaims', description: 'Select the APPLICATION or GIT HUB Repo')
+string(name: 'TOPIC_BRANCH', defaultValue: 'topic_jira_number_feature', description: 'Which Branch should I deploy')
+string(name: 'RELEASE_ID', defaultValue: '', description: 'provide  Release Identification details')
+string(name: 'DEPLOY_TYPE', defaultValue: '', description: 'Type of Deploy  Dev or Stage or Prod')
+}
+stages {
+stage ('Build-Info-Set'){
+steps{
+script{
+// def triggeredByUser =  "${currentBuild.rawBuild.getCause(hudson.model.Cause$UserIdCause).getUserName()}"
+currentBuild.displayName = "${BUILD_DISPLAY_NAME} - ${ENVIRONMENT}_${APPLICATION}_${TOPIC_BRANCH}_${DEPLOY_TYPE} "
+} //script
+} //steps
+} //stage
+stage('verify-topic'){
+steps{
+// /u05/jenkins/instances/eo-jenkins/jenkins_data/workspace/EMDS/OAIMS/
+sh'''
+#!/bin/bash
+set +x
+chmod -R 777 ${SEQ_FILE_LOC}/${APPLICATION}/${TOPIC_BRANCH}
+deploy_file="${SEQ_FILE_LOC}/${APPLICATION}/${TOPIC_BRANCH}/deploy/${TOPIC_BRANCH}_deploy.txt"
+if [ -f $deploy_file ]; then
+echo "\n Deploy file exist \n "
+cd ${SEQ_FILE_LOC}/${APPLICATION}/${TOPIC_BRANCH}
+pwd
+# cat deploy/${TOPIC_BRANCH}_deploy.txt | grep -v '^#' | grep -v '^$' | cut -d '|' -f2 | sort | tee ${TOPIC_BRANCH}/${TOPIC_BRANCH}_sorted_deploy_seq.txt
+if [ `wc -l ${TOPIC_BRANCH}_diff_files.txt | awk '{print $1}'` -lt "2" ]; then
+echo "\n There are no files modified in this branch ${TOPIC_BRANCH}, Discontinue and abort \n"
+cat ${deploy_file}
+echo "\n versus \n"
+cat ${TOPIC_BRANCH}_diff_files.txt && exit 1
+else
+echo "\n Changes are observed in ${TOPIC_BRANCH}, Continue with the Next Steps \n"
+echo "\n Deploy file list \n"
+# if diff -y -W 100 "${TOPIC_BRANCH}_sorted_diff_log.txt" "${TOPIC_BRANCH}_sorted_deploy_seq.txt" ; then
+if [ -f $deploy_file ] ; then
+echo " \n SUCCESS: Files Are Identical! \n"
+while read -r line ;
+do
+[[ "$line" =~ ^[[:space:]]*# ]] && continue
+[[ "$line" =~ ^$ ]] && continue
+IFS="|" read script file user <<< "$line"
+echo " bash : $script deploy : $file as user: $user"
+done < "$deploy_file"
+else
+echo "\n ### FAILED: ! Files Are Different ! ### \n" && exit 1
+fi
+fi
+else
+echo "\n ### FAILED: ! Deploy file does not exist ! ### \n"  && exit 1
+fi
+'''
+}// Steps 
+} // Stage verify completed
+stage('deploy-topic'){
+steps {
+sh '''
+#!/bin/bash
+set +x
+cd ${SEQ_FILE_LOC}/${APPLICATION}/${TOPIC_BRANCH}
+path_a="$(pwd)"
+deploy_file="deploy/${TOPIC_BRANCH}_deploy.txt"
+while read -r line ;
+do
+[[ "$line" =~ ^[[:space:]]*# ]] && continue
+[[ "$line" =~ ^$ ]] && continue
+IFS="|" read script file user <<< "$line"
+echo " bash : $script deploy : $file as user: $user"
+if [ "${file}" == *00.sql* ]; then 
+script="migrate_apex.sh"
+fi
+path_b="$(dirname $file)"
+path="$path_a/$path_b"
+echo $path
+filename="$(basename $file)"
+script="${CODE_MIG_S_LOC}$script"
+echo $script
+# ksh  *.sh  <arg> < /dev/null dev null is needed to continue the loop as script has ssh and scp commands to run
+# later we can reset the path to devops repo dir path
+bash $script ${ENVIRONMENT} $path $filename $user </dev/null
+echo "script is executed"
+# execute the script
+done < "$deploy_file"
+echo " DeploySequenceFile : deploy/${TOPIC_BRANCH}_deploy.txt executed successfully" 
+'''
+} //steps
+}// stage
+stage('Status-Update'){
+steps{
+sh '''
+#!/bin/bash
+set +x                                 
+date=`date '+%Y-%m-%d_%H-%M-%S'`
+cd ${SEQ_FILE_LOC}/${APPLICATION}/
+if [ "${DEPLOY_TYPE}" = "Prod" ]; then 
+# touch ${APPLICATION}.txt
+mkdir -p production_archive
+echo "archiving the artifacts \n"
+tar -cvzf ${TOPIC_BRANCH}.tgz ${TOPIC_BRANCH}
+mv -vf ${TOPIC_BRANCH}.tgz production_archive/
+# echo "${APPLICATION},${TOPIC_BRANCH},${ENVIRONMENT},${DEPLOY_TYPE},${date}" | tee -a ${APPLICATION}.txt
+fi
+echo "${APPLICATION},${TOPIC_BRANCH},${ENVIRONMENT},${DEPLOY_TYPE},${date},${RELEASE_ID},${BUILD_URL}" | tee -a app_deploy_status.txt
+echo "\n"
+tail -n1 app_deploy_status.txt
+export http_proxy=http://www-proxy.us.oracle.com:80
+export https_proxy=https://www-proxy.us.oracle.com:80
+DEPLOYMENT_SUMMARY="SUCCESS, ${APPLICATION},${TOPIC_BRANCH},${ENVIRONMENT},${DEPLOY_TYPE},${date},${RELEASE_ID},${BUILD_URL}"
+FINAL_NOTIFICATION="OAIMS_DEPLOYMENT_SUMMARY: ${DEPLOYMENT_SUMMARY}"
+# curl -X POST -H 'Content-type: application/json' --data '{"text":"'"$FINAL_NOTIFICATION"'"}'  https://hooks.slack.com/services/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
+'''
+}//steps
+}//stage
+}//stages
+}//pipeline 

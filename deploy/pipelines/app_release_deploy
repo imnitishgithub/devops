@@ -1,0 +1,81 @@
+#!groovy
+// import hudson.model.*
+import jenkins.model.Jenkins;
+import java.util.regex.Pattern
+import groovy.xml.StreamingMarkupBuilder
+import groovy.util.XmlNodePrinter
+import org.codehaus.groovy.tools.xml.DomToGroovy
+import groovy.xml.XmlUtil
+
+node(){
+
+parameters { // add more targets as well as update the below case statements appropriately
+choice(name: 'TARGET', options: 'EMDSAD','EMDSBD','EMDSAU','EMDSCD','EMDSAS','EMDSAP', description: 'Target instance to deploy')
+string(name: 'RELEASE_ID', defaultValue: 'default', description: 'Provide the Release Identification Name ')
+string(name: 'TOPIC_LIST', defaultValue: 'topic_jira_number_feature', description: 'List the topics to be deployed with ", " as separator ')
+}
+
+def String triggeredByUser="${currentBuild.rawBuild.getCause(hudson.model.Cause$UserIdCause).getUserName()}"
+currentBuild.displayName = "${BUILD_DISPLAY_NAME}_${TARGET} - ${triggeredByUser}"
+
+def topics=env.TOPIC_LIST.split("\\, ")
+def String release_id="${RELEASE_ID}"
+
+def String target="${TARGET}"
+echo "${topics} ${target} ${release_id}"
+
+switch(target){
+
+case ["EMDSAD","EMDSBD"]:
+deploy_type="Dev"
+application="oaims"
+println("The value of Application is ${application}");
+deploy(topics)
+break;
+
+case ["EMDSAU","EMDSCD"]:
+deploy_type="Stage"
+application="oaims"
+println("The value of Application is ${application}");
+deploy(topics)
+break;
+
+case ["EMDSAS"]:
+deploy_type="Integration"
+application="oaims"
+println("The value of Application is ${application}");
+deploy(topics)
+break;
+
+case ["EMDSAP"]:
+deploy_type="Prod"
+application="oaims"
+println("The value of Application is ${application}");
+deploy(topics)
+break;
+
+}
+
+// echo "${topics} ${target} ${application} "
+System.setProperty("application", "${application}")
+System.setProperty("release_id", "${release_id}")
+System.setProperty("deploy_type", "${deploy_type}")
+// deploy(topics)
+}
+
+// @NonCP
+def deploy(topics){
+for (String topic : topics){
+echo "${topic} ${target} ${application} ${deploy_type} ${release_id}"
+//System.setProperty("topic", "${topic}")
+build job: 'app_topic_verification_deploy',
+parameters: [
+[$class: 'StringParameterValue', name: 'APPLICATION', value: application ],
+[$class: 'StringParameterValue', name: 'ENVIRONMENT', value: target ],
+[$class: 'StringParameterValue', name: 'TOPIC_BRANCH', value: topic],
+[$class: 'StringParameterValue', name: 'RELEASE_ID', value: release_id],
+[$class: 'StringParameterValue', name: 'DEPLOY_TYPE', value: deploy_type]
+],
+wait:false
+}
+}
